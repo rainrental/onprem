@@ -1,0 +1,8 @@
+{
+  "deduplicationGroup": "hostnameGroup",
+  "groups": {
+    "Warehouse1_ZoneA": ["ReaderA", "ReaderB", "ReaderC"],
+    "Warehouse1_ZoneB": ["ReaderD", "ReaderE"],
+    "Warehouse2_ZoneA": ["ReaderF", "ReaderG"]
+  }
+} 

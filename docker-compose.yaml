@@ -1,0 +1,213 @@
+services:
+  mosquitto:
+    container_name: rfid-mosquitto
+    restart: always
+    hostname: mosquitto
+    image: eclipse-mosquitto:2.0.11
+    volumes:
+      - ./mosquitto:/mosquitto
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    ports:
+      - 1883:1883
+      - 9001:9001
+    expose:
+      - 1883
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+
+  # Redis for caching and retry queues
+  redis:
+    container_name: rfid-redis
+    image: redis:7-alpine
+    restart: always
+    # Remove external port exposure - only accessible within Docker network
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+
+  # Firebase Gateway - Single point of Firebase access
+  firebase-gateway:
+    container_name: rfid-firebase-gateway
+    build:
+      context: firebase-gateway
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      LOCATIONNAME: ${LOCATIONNAME}
+      COMPANY_ID: ${COMPANY_ID}
+      FIREBASE_DATABASEURL: ${FIREBASE_DATABASEURL}
+      FIREBASE_API_KEY: ${FIREBASE_API_KEY}
+      FIREBASE_AUTH_DOMAIN: ${FIREBASE_AUTH_DOMAIN}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
+      FIREBASE_STORAGE_BUCKET: ${FIREBASE_STORAGE_BUCKET}
+      FIREBASE_MESSAGING_SENDER_ID: ${FIREBASE_MESSAGING_SENDER_ID}
+      FIREBASE_APP_ID: ${FIREBASE_APP_ID}
+      FIREBASE_FUNCTIONS_URL: ${FIREBASE_FUNCTIONS_URL}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB}
+      INVITATION_CODE: ${INVITATION_CODE}
+    volumes:
+      - firebase-gateway-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Internal access only - no external port needed
+    # ports:
+    #   - "3001:3000"
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+
+  # Fixed RFID Processor (no Firebase auth needed)
+  fixed-nodejs:
+    container_name: rfid-fixed-processor
+    build:
+      context: rfid-processor
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      MOBILE: "0"
+      LOCATIONNAME: ${LOCATIONNAME}
+      COMPANY_ID: ${COMPANY_ID}
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_TOPIC: ${MQTT_TOPIC}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_ALIVE_INTERVAL: ${MQTT_ALIVE_INTERVAL}
+      MQTT_LOG_RAW: ${MQTT_LOG_RAW}
+      LOG_UNIQUE_TAGS: ${LOG_UNIQUE_TAGS}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_MAX_QUEUE_SIZE: ${REDIS_MAX_QUEUE_SIZE}
+      REDIS_MAX_MEMORY_MB: ${REDIS_MAX_MEMORY_MB}
+      REDIS_ENABLE_PERSISTENCE: ${REDIS_ENABLE_PERSISTENCE}
+      ENABLE_PERIODIC_PUBLISHING: ${ENABLE_PERIODIC_PUBLISHING}
+      HEALTH_PUBLISH_INTERVAL: ${HEALTH_PUBLISH_INTERVAL}
+      METRICS_PUBLISH_INTERVAL: ${METRICS_PUBLISH_INTERVAL}
+      SUMMARY_PUBLISH_INTERVAL: ${SUMMARY_PUBLISH_INTERVAL}
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS}
+      FIREBASE_GATEWAY_URL: ${FIREBASE_GATEWAY_URL}
+      # No Firebase config needed - uses gateway instead
+    volumes: []
+    depends_on:
+      mosquitto:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      firebase-gateway:
+        condition: service_started
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+
+  # Mobile RFID Processor (no Firebase auth needed)
+  mobile-nodejs:
+    container_name: rfid-mobile-processor
+    build:
+      context: rfid-processor
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      MOBILE: "1"
+      LOCATIONNAME: ${LOCATIONNAME}
+      COMPANY_ID: ${COMPANY_ID}
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_TOPIC: ${MQTT_TOPIC_MOBILE}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_ALIVE_INTERVAL: ${MQTT_ALIVE_INTERVAL}
+      MQTT_LOG_RAW: ${MQTT_LOG_RAW}
+      LOG_UNIQUE_TAGS: ${LOG_UNIQUE_TAGS}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_MAX_QUEUE_SIZE: ${REDIS_MAX_QUEUE_SIZE}
+      REDIS_MAX_MEMORY_MB: ${REDIS_MAX_MEMORY_MB}
+      REDIS_ENABLE_PERSISTENCE: ${REDIS_ENABLE_PERSISTENCE}
+      ENABLE_PERIODIC_PUBLISHING: ${ENABLE_PERIODIC_PUBLISHING}
+      HEALTH_PUBLISH_INTERVAL: ${HEALTH_PUBLISH_INTERVAL}
+      METRICS_PUBLISH_INTERVAL: ${METRICS_PUBLISH_INTERVAL}
+      SUMMARY_PUBLISH_INTERVAL: ${SUMMARY_PUBLISH_INTERVAL}
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS}
+      FIREBASE_GATEWAY_URL: ${FIREBASE_GATEWAY_URL}      
+    volumes: []
+    depends_on:
+      mosquitto:
+        condition: service_started
+      firebase-gateway:
+        condition: service_started
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+
+  # Update Service - Automated updates
+  update-service:
+    container_name: rfid-update-service
+    build:
+      context: update-service
+      dockerfile: Dockerfile
+    restart: always
+    volumes:
+      - ./:/app/workspace:rw  # Read-write access for updates
+      # Docker API access for updates (limited permissions in production)
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only access
+      - update-service-data:/app/config
+      - update-service-logs:/app/logs
+    environment:
+      - GITHUB_REPO=${GITHUB_REPO:-your-org/onprem-repo}
+      - UPDATE_CHECK_INTERVAL=${UPDATE_CHECK_INTERVAL:-15}
+      - LOCATIONNAME=${LOCATIONNAME}
+      - COMPANY_ID=${COMPANY_ID}
+    depends_on:
+      firebase-gateway:
+        condition: service_started
+    networks:
+      - default  # Use default network for internet access
+      - rfid-internal  # Also on internal network for service communication
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "5"
+
+volumes:
+  redis-data:
+  firebase-gateway-data:
+  update-service-data:
+  update-service-logs:
+
+networks:
+  rfid-internal:
+    driver: bridge
+    # Removed internal: true to allow internet access when needed
