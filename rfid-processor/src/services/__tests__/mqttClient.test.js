@@ -8,9 +8,14 @@ jest.mock('../locationState', () => ({
   }))
 }));
 
-jest.mock('../deduplicator', () => ({
-  shouldReport: jest.fn(() => true)
-}));
+jest.mock('../deduplicator', () => {
+  return jest.fn().mockImplementation(() => ({
+    shouldReport: jest.fn(() => true),
+    setReportCallback: jest.fn(),
+    cleanup: jest.fn(),
+    getStats: jest.fn(() => ({}))
+  }));
+});
 
 jest.mock('../redisRetryQueue', () => ({
   addToRfidQueue: jest.fn(() => true)
@@ -25,6 +30,7 @@ jest.mock('../../utils/logger', () => ({
   info: jest.fn(),
   verbose: jest.fn(),
   error: jest.fn(),
+  warning: jest.fn(),
   tag: jest.fn()
 }));
 
@@ -56,29 +62,23 @@ describe('MqttClient - Tag Document Format', () => {
         antennaPort: 1,
         epc: 'E28011002000725019730950',
         frequency: 915250000,
-
         host_timestamp: '2025-08-01T00:17:41.312Z',
         hostname: 'HC720E250508197',
         location: expect.any(String),
+        mobile: expect.any(Boolean),
         peakRssiCdbm: -71.8,
-        server_timestamp: {
-          '__time__': expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-        },
         tid: 'E28011002000725019730950',
         tidHex: 'E28011002000725019730950',
         timestamp: '2025-08-01T00:17:41.312Z',
         topic: 'fixedevents',
         transmitPowerCdbm: 3000,
-        ttl: {
-          '__time__': expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-        }
+        companyId: expect.any(String)
       });
 
       // Verify no old fields
       expect(document).not.toHaveProperty('tidDecimal');
       expect(document).not.toHaveProperty('rssi');
       expect(document).not.toHaveProperty('antenna');
-      expect(document).not.toHaveProperty('mobile');
     });
 
     it('should handle missing antenna value', () => {

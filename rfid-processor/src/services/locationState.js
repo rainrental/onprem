@@ -15,46 +15,26 @@ class LocationStateService {
 
   async loadFromGateway() {
     try {
-      const gatewayUrl = config.firebase.gatewayUrl;
-      const locationName = config.location.name;
-      const companyId = config.companyId;
-
-      logger.info(`Fetching configuration from gateway: ${gatewayUrl}/api/config/location/${locationName}?companyId=${companyId}`);
-
+      const { gatewayUrl, locationName, companyId } = this.getConfigParams();
       const response = await axios.get(`${gatewayUrl}/api/config/location/${locationName}`, {
         params: { companyId },
         timeout: 5000
       });
 
-      if (response.data.success && response.data.config) {
-        const gatewayConfig = response.data.config;
-        
-        // Update state based on device type
-        if (config.mobile) {
-          this.state = {
-            deduplicate: gatewayConfig.deduplicateMobile ?? false,
-            deduplicateInterval: gatewayConfig.deduplicateMobileInterval ?? 2,
-            reporting: gatewayConfig.reportingMobile ?? false
-          };
-        } else {
-          this.state = {
-            deduplicate: gatewayConfig.deduplicate ?? false,
-            deduplicateInterval: gatewayConfig.deduplicateInterval ?? 2,
-            reporting: gatewayConfig.reporting ?? false
-          };
-        }
-
-        this.lastConfigUpdate = new Date();
-        logger.info('Configuration loaded from gateway', {
-          locationName,
-          companyId,
-          config: this.state,
-          lastUpdated: gatewayConfig.lastUpdated
-        });
-      } else {
+      if (!response.data.success || !response.data.config) {
         throw new Error('Invalid response from gateway');
       }
 
+      this.updateStateFromConfig(response.data.config);
+      this.lastConfigUpdate = new Date();
+      
+      logger.info('Configuration loaded from gateway', {
+        locationName,
+        companyId,
+        config: this.state,
+        lastUpdated: response.data.config.lastUpdated
+      });
+      
       this.logCurrentState();
       
     } catch (error) {
@@ -63,20 +43,42 @@ class LocationStateService {
         locationName: config.location.name,
         companyId: config.companyId
       });
-      
-
-      this.state = {
-        deduplicate: false,
-        deduplicateInterval: 2,
-        reporting: true  // Enable reporting for testing
-      };
-      this.logCurrentState();
+      this.setDefaultState();
     }
+  }
+
+  getConfigParams() {
+    return {
+      gatewayUrl: config.firebase.gatewayUrl,
+      locationName: config.location.name,
+      companyId: config.companyId
+    };
+  }
+
+  updateStateFromConfig(gatewayConfig) {
+    const prefix = config.mobile ? 'Mobile' : '';
+    this.state = {
+      deduplicate: gatewayConfig[`deduplicate${prefix}`] ?? false,
+      deduplicateInterval: gatewayConfig[`deduplicate${prefix}Interval`] ?? 2,
+      reporting: gatewayConfig[`reporting${prefix}`] ?? false
+    };
+  }
+
+  setDefaultState() {
+    this.state = {
+      deduplicate: false,
+      deduplicateInterval: 2,
+      reporting: true
+    };
+    this.logCurrentState();
   }
 
   async refreshConfiguration() {
     const now = Date.now();
-    if (!this.lastConfigUpdate || (now - this.lastConfigUpdate.getTime()) > this.configRefreshInterval) {
+    const shouldRefresh = !this.lastConfigUpdate || 
+      (now - this.lastConfigUpdate.getTime()) > this.configRefreshInterval;
+    
+    if (shouldRefresh) {
       logger.info('Refreshing configuration from gateway');
       await this.loadFromGateway();
     }

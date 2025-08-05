@@ -14,44 +14,33 @@ class Deduplicator {
     const cached = this.cache.get(key);
     
     if (cached) {
-      // Tag already seen - replace cached event with latest
-      cached.event = tagDocument; // Replace, don't accumulate
+      cached.event = tagDocument;
       cached.lastSeen = timestamp;
       
       logger.tag('cached', {
         tagId: tagDocument.tidHex,
         hostname: tagDocument.hostname,
-        uniqueCount
-      });
-      
-      // Update metrics
-      metricsCollector.recordDeduplicationStats({
-        cacheSize: this.cache.size
+        uniqueCount,
+        action: 'cached'
       });
       
       return false;
-    } else {
-      // First time seeing this tag - report immediately and set up timer
-      this.cache.set(key, {
-        event: tagDocument, // Single event, not array
-        lastSeen: timestamp,
-        timer: this.scheduleReport(key)
-      });
-      
-      // Log processing for new tags
-      logger.tag('processing', {
-        tagId: tagDocument.tidHex,
-        hostname: tagDocument.hostname,
-        uniqueCount
-      });
-      
-      // Update metrics
-      metricsCollector.recordDeduplicationStats({
-        cacheSize: this.cache.size
-      });
-      
-      return true;
     }
+    
+    this.cache.set(key, {
+      event: tagDocument,
+      lastSeen: timestamp,
+      timer: this.scheduleReport(key)
+    });
+    
+    logger.tag('processing', {
+      tagId: tagDocument.tidHex,
+      hostname: tagDocument.hostname,
+      uniqueCount,
+      action: 'processing'
+    });
+    
+    return true;
   }
 
   scheduleReport(key) {
@@ -66,35 +55,44 @@ class Deduplicator {
   reportCached(key) {
     const cached = this.cache.get(key);
     
-    if (cached && cached.event) {
-      // Report the latest event (only one event, not accumulated)
-      if (this.onReport) {
-        this.onReport(cached.event, cached.event.tidHex, 1); // Always count as 1
-      }
-      
-      logger.tag('delayed-report', {
-        tagId: cached.event.tidHex,
-        hostname: cached.event.hostname,
-        cachedCount: 1
-      });
-      
-      // Update metrics
-      metricsCollector.recordDeduplicationStats({
-        delayedReports: 1,
-        cacheSize: this.cache.size
-      });
-      
-      this.cache.delete(key);
-    } else {
+    if (!cached?.event) {
       logger.warning(`No cached event found for key: ${key}`);
+      this.timers.delete(key);
+      return;
     }
     
-    // Clean up timer
+    if (this.onReport) {
+      this.onReport(cached.event, cached.event.tidHex, 1);
+    }
+    
+    logger.tag('delayed-report', {
+      tagId: cached.event.tidHex,
+      hostname: cached.event.hostname,
+      cachedCount: 1,
+      action: 'delayed-report'
+    });
+    
+    this.cache.delete(key);
     this.timers.delete(key);
   }
 
   setReportCallback(callback) {
     this.onReport = callback;
+  }
+
+  updateInterval(newIntervalMinutes) {
+    if (newIntervalMinutes === this.intervalMinutes) return;
+    
+    logger.info(`Updating deduplicator interval from ${this.intervalMinutes} to ${newIntervalMinutes} minutes`);
+    this.intervalMinutes = newIntervalMinutes;
+    
+    for (const [key, timer] of this.timers.entries()) {
+      clearTimeout(timer);
+      const cached = this.cache.get(key);
+      if (cached) {
+        cached.timer = this.scheduleReport(key);
+      }
+    }
   }
 
   cleanup() {

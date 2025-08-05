@@ -41,18 +41,21 @@ class FirebaseService {
     try {
       const collectionRef = collection(this.database, collectionPath);
       
-      // Calculate TTL (30 days from now)
-      const ttl = new Date();
-      ttl.setDate(ttl.getDate() + 30);
+      // Calculate TTL using configuration value (defaults to 30 days)
+      const ttlDays = config.app.tagTTLDays || 30;
+      const ttlDate = new Date();
+      ttlDate.setDate(ttlDate.getDate() + ttlDays);
+      const ttlTimestamp = Timestamp.fromDate(ttlDate);
       
       const docRef = await addDoc(collectionRef, {
         ...documentData,
+        createdAt: serverTimestamp(),
         server_timestamp: serverTimestamp(),
-        ttl: ttl.toISOString(),
-        createdAt: serverTimestamp()
+        timestamp: serverTimestamp(), // Firebase server timestamp
+        ttl: ttlTimestamp
       });
       
-      logger.debug(`Document created: ${docRef.id} in ${collectionPath}`);
+      logger.debug(`Document created: ${docRef.id} in ${collectionPath} with TTL ${ttlDays} days`);
       return { id: docRef.id, ...documentData };
     } catch (error) {
       logger.error(`Failed to create document in ${collectionPath}:`, error);

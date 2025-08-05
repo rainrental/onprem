@@ -89,7 +89,7 @@ class Logger {
       case 'processing':
         color = 'blue';
         break;
-      case 'reported':
+      case 'delivered':
         color = 'green';
         break;
       case 'cached':

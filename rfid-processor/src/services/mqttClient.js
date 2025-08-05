@@ -32,6 +32,9 @@ class MqttClient {
       }
     });
     
+    const state = locationStateService.getState();
+    this.deduplicator.updateInterval(state.deduplicateInterval);
+    
     logger.info('Deduplicator ready for use');
   }
 
@@ -117,6 +120,18 @@ class MqttClient {
     return `${groupName}:${tagEvent.tidHex}`;
   }
 
+  getOutcomeInfo(shouldReport, reporting) {
+    if (shouldReport && reporting) {
+      return { outcome: 'Delivered', emoji: '📤' };
+    } else if (shouldReport && !reporting) {
+      return { outcome: 'Not Reported', emoji: '🚫' };
+    } else if (!shouldReport) {
+      return { outcome: 'Cached', emoji: '⏳' };
+    } else {
+      return { outcome: 'Error', emoji: '❌' };
+    }
+  }
+
   async processTagInventory(messageData, topic) {
     const startTime = Date.now();
     const tagEvent = messageData.tagInventoryEvent;
@@ -136,18 +151,19 @@ class MqttClient {
 
     const tagDocument = this.createTagDocument(tagEvent, topic);
 
-    // Add to unique tags first
     this.uniqueTags.add(tagEvent.tidHex);
 
-    // Refresh configuration before processing (but don't block on it)
-    locationStateService.refreshConfiguration().catch(error => {
+    locationStateService.refreshConfiguration().then(() => {
+      const state = locationStateService.getState();
+      this.deduplicator.updateInterval(state.deduplicateInterval);
+    }).catch(error => {
       logger.warning('Failed to refresh configuration, using current state', error);
     });
 
-    // Process deduplication using the new key approach
     const state = locationStateService.getState();
     const deduplicationKey = this.getDeduplicationKey(tagEvent);
-    const shouldReport = !state.deduplicate ||
+    
+    const shouldReport = !state.deduplicate || 
       this.deduplicator.shouldReport(
         new Date(tagDocument.timestamp),
         deduplicationKey,
@@ -155,11 +171,8 @@ class MqttClient {
         this.uniqueTags.size
       );
 
-    const decisionReport = shouldReport ? 'tick' : 'cross';
-    const deduplicate = state.deduplicate ? 'tick' : 'cross';
-    const reporting = state.reporting ? 'tick' : 'cross';
-    
-    logger.info(`TPD: [decision${decisionReport}] [Deduplicate ${deduplicate}] [Reporting ${reporting}] [deduplicationKey : ${deduplicationKey}]`);
+    const { outcome, emoji } = this.getOutcomeInfo(shouldReport, state.reporting);
+    logger.info(`TPD: ${emoji} ${outcome} [Key: ${deduplicationKey}]`);
 
     if (shouldReport && state.reporting) {
       await this.queueTagEvent(tagEvent.tidHex, tagDocument);
@@ -167,13 +180,11 @@ class MqttClient {
       logger.tag('not-reported', {
         tagId: tagEvent.tidHex,
         hostname: tagEvent.hostname,
-        uniqueCount: this.uniqueTags.size
+        uniqueCount: this.uniqueTags.size,
+        action: 'not-reported'
       });
-    } else {
-      logger.info('Tag not reported - shouldReport false or reporting disabled');
     }
 
-    // Record metrics
     const processingTime = Date.now() - startTime;
     metricsCollector.recordTagEvent(tagEvent.tidHex, tagEvent.hostname, processingTime);
   }
@@ -193,37 +204,28 @@ class MqttClient {
     };
 
     logger.info(`Non-tag event: ${eventType} for ${hostname}`, eventData);
-
-    // Queue the event for processing by Firebase Gateway
     await this.queueEvent(eventDocument);
   }
 
   createTagDocument(tagEvent, topic) {
-    const ttl = new Date();
-
-    const tagTTLDays = process.env.FIRESTORE_TAG_TTL_DURATION_DAYS ? parseInt(process.env.FIRESTORE_TAG_TTL_DURATION_DAYS) : 30;
-    ttl.setDate(ttl.getDate() + tagTTLDays);
-
+    // Convert tidHex to base64 for tid field
+    const tidBase64 = Buffer.from(tagEvent.tidHex, 'hex').toString('base64');
+    
     const document = {
-      // Standard RFID fields
       antennaName: `${tagEvent.antenna || 1}`,
       antennaPort: tagEvent.antenna || 1,
-      epc: tagEvent.tidHex,
+      companyId: config.companyId,
+      epc: tagEvent.epc || tagEvent.tidHex, // Use epc if available, fallback to tidHex
       frequency: config.rfid.frequency,
-
-      host_timestamp: tagEvent.timestamp,
+      host_timestamp: tagEvent.timestamp, // Host timestamp from RFID reader
       hostname: tagEvent.hostname,
       location: config.location.name,
-      mobile: config.mobile, // Indicates if this is a mobile/handheld device
+      mobile: config.mobile,
       peakRssiCdbm: tagEvent.rssi,
-      tid: tagEvent.tidHex,
+      tid: tidBase64, // Base64 encoding of tidHex
       tidHex: tagEvent.tidHex,
-      timestamp: tagEvent.timestamp,
       topic: topic,
-      transmitPowerCdbm: config.rfid.transmitPowerCdbm,
-      
-      // Additional metadata
-      companyId: config.companyId
+      transmitPowerCdbm: config.rfid.transmitPowerCdbm
     };
 
     if (tagEvent.lat && tagEvent.lon) {
@@ -236,9 +238,6 @@ class MqttClient {
 
   async queueTagEvent(tagId, tagDocument) {
     try {
-      logger.verbose(`Attempting to queue tag event: ${tagId}`);
-      
-      // Add to Redis queue for Firebase Gateway to process
       const queueData = {
         type: 'tagRead',
         data: {
@@ -248,18 +247,15 @@ class MqttClient {
         }
       };
 
-      logger.verbose(`Queue data prepared:`, queueData);
-
       const added = await retryQueue.addToRfidQueue('tagReads', queueData);
-      
-      logger.verbose(`Queue result: ${added}`);
       
       if (added) {
         this.messageCounter++;
-        logger.tag('queued', {
+        logger.tag('delivered', {
           tagId,
           hostname: tagDocument.hostname,
-          uniqueCount: this.uniqueTags.size
+          uniqueCount: this.uniqueTags.size,
+          action: 'delivered'
         });
       } else {
         logger.error(`Failed to queue tag event: ${tagId} - queue capacity limit reached`);
